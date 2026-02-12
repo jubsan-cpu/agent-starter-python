@@ -47,7 +47,7 @@ class DFNModel:
 
     def __init__(self, model_name: str = "DeepFilterNet3", atten_lim_db: float | None = None):
         self.model, self.df_state, _ = init_df(model_name)
-        self._device = "cuda" if torch.cuda.is_available() else "cpu"
+        self._device = "cpu"
         self.model = self.model.to(self._device)
         self.model.eval()
         self.atten_lim_db = atten_lim_db
