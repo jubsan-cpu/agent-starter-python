@@ -24,12 +24,18 @@ RUN adduser \
 # Install build dependencies required for Python packages with native extensions
 # gcc: C compiler needed for building Python packages with C extensions
 # python3-dev: Python development headers needed for compilation
+# curl: needed to install Rust toolchain
 # We clean up the apt cache after installation to keep the image size down
 RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
     python3-dev \
+    curl \
   && rm -rf /var/lib/apt/lists/*
+
+# Install Rust toolchain (required by deepfilterlib which builds via maturin/cargo)
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
 
 # Create a new directory for our application code
 # And set it as the working directory
