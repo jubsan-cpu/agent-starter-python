@@ -32,6 +32,8 @@ RUN apt-get update && apt-get install -y \
     python3-dev \
     curl \
     git \
+    libc++1 \
+    libglib2.0-0 \
   && rm -rf /var/lib/apt/lists/*
 
 # Install Rust toolchain (required by deepfilterlib which builds via maturin/cargo)
@@ -71,7 +73,7 @@ USER appuser
 RUN uv run src/agent.py download-files
 
 # Pre-download DeepFilterNet3 model weights
-RUN uv run python -c "from df.enhance import get_model_basedir; get_model_basedir('DeepFilterNet3')"
+RUN uv run python -c "from df.enhance import get_model_basedir; get_model_basedir('DeepFilterNet2')"
 
 # Run the application using UV
 # UV will activate the virtual environment and run the agent.

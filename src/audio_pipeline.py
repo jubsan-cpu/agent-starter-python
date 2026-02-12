@@ -27,9 +27,9 @@ logger = logging.getLogger("audio-pipeline")
 DEEPFILTER_SR = 48000
 OUTPUT_SR = 16000
 
-# 200ms chunks — balances latency vs DeepFilterNet quality
-CHUNK_DURATION_S = 0.2
-CHUNK_SAMPLES = int(DEEPFILTER_SR * CHUNK_DURATION_S)  # 9600 samples
+# 90ms chunks — near DFN's ~80ms quality floor for minimum latency
+CHUNK_DURATION_S = 0.09
+CHUNK_SAMPLES = int(DEEPFILTER_SR * CHUNK_DURATION_S)  # 4320 samples
 
 
 class DFNModel:

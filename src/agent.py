@@ -13,6 +13,7 @@ from livekit.plugins import cartesia, elevenlabs, openai, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 from audio_pipeline import AudioPreprocessor, DFNAudioInput, DFNModel
+from ten_vad_adapter import TenLiveKitVAD
 
 logger = logging.getLogger("agent")
 
@@ -33,9 +34,9 @@ server = AgentServer()
 
 
 def prewarm(proc: JobProcess):
-    """Prewarm Silero VAD and DFN model on process start."""
-    proc.userdata["vad"] = silero.VAD.load()
-    proc.userdata["dfn_model"] = DFNModel(atten_lim_db=20)
+    """Prewarm TEN VAD and DFN model on process start."""
+    proc.userdata["vad"] = TenLiveKitVAD()
+    proc.userdata["dfn_model"] = DFNModel(model_name="DeepFilterNet2", atten_lim_db=90)
 
 
 server.setup_fnc = prewarm
@@ -56,7 +57,7 @@ async def my_agent(ctx: JobContext):
         tts=cartesia.TTS(model="sonic-3"),
         # Turn detection
         turn_detection=MultilingualModel(),
-        # Silero VAD — prewarmed, now receives denoised audio
+        # TEN VAD — prewarmed, now receives denoised audio
         vad=ctx.proc.userdata["vad"],
         # Allow LLM to generate while waiting for end of turn
         preemptive_generation=True,
