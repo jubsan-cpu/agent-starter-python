@@ -51,3 +51,15 @@ ignore = ["E501"]  # Line too long (handled by formatter)
 quote-style = "double"
 indent-style = "space"
 
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cpu", marker = "platform_system == 'Linux' and platform_machine == 'x86_64'" },
+]
+torchaudio = [
+    { index = "pytorch-cpu", marker = "platform_system == 'Linux' and platform_machine == 'x86_64'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
