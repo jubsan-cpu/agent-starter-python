@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass
@@ -8,6 +9,8 @@ import numpy as np
 from livekit import rtc
 from livekit.agents import vad
 from ten_vad import TenVad
+
+from smart_turn_adapter import SmartTurnAnalyzer, SmartTurnConfig
 
 logger = logging.getLogger("ten-vad")
 
@@ -19,6 +22,7 @@ class _TenVADOptions:
     threshold: float
     min_speech_duration: float
     min_silence_duration: float
+    smart_turn: SmartTurnConfig
 
 
 class TenLiveKitVAD(vad.VAD):
@@ -32,6 +36,7 @@ class TenLiveKitVAD(vad.VAD):
         threshold: float = 0.5,
         min_speech_duration: float = 0.05,
         min_silence_duration: float = 0.55,
+        smart_turn: SmartTurnConfig | None = None,
     ) -> None:
         if sample_rate != 16000:
             raise ValueError("TEN VAD only supports 16kHz input")
@@ -51,6 +56,7 @@ class TenLiveKitVAD(vad.VAD):
             threshold=threshold,
             min_speech_duration=min_speech_duration,
             min_silence_duration=min_silence_duration,
+            smart_turn=smart_turn or SmartTurnConfig(),
         )
 
     @property
@@ -73,6 +79,13 @@ class TenVADStream(vad.VADStream):
         self._input_sample_rate = 0
         self._resampler: rtc.AudioResampler | None = None
         self._buffer = np.empty(0, dtype=np.int16)
+
+        # Smart Turn additions
+        self._smart_turn_analyzer = SmartTurnAnalyzer(opts.smart_turn, opts.sample_rate)
+        self._turn_audio_buffer = np.empty(0, dtype=np.int16)
+        self._inference_task: asyncio.Task | None = None
+        self._inference_generation = 0
+        self._inference_task_generation = 0
 
     @staticmethod
     def _frame_to_mono(frame: rtc.AudioFrame) -> np.ndarray:
@@ -111,6 +124,11 @@ class TenVADStream(vad.VADStream):
         inference_duration = time.perf_counter() - start
         return probability, flag == 1, inference_duration
 
+    def _cancel_inference(self) -> None:
+        if self._inference_task is not None and not self._inference_task.done():
+            self._inference_task.cancel()
+        self._inference_task = None
+
     async def _main_task(self) -> None:
         speaking = False
         current_sample = 0
@@ -120,6 +138,9 @@ class TenVADStream(vad.VADStream):
         accumulated_speech = 0.0
         accumulated_silence = 0.0
         window_duration = self._opts.hop_size / self._opts.sample_rate
+
+        # Max samples for Smart Turn analysis (default 8s)
+        max_buffer_samples = int(self._opts.smart_turn.max_duration_secs * self._opts.sample_rate)
 
         async for input_frame in self._input_ch:
             if not isinstance(input_frame, rtc.AudioFrame):
@@ -170,6 +191,11 @@ class TenVADStream(vad.VADStream):
                 )
 
                 if is_speech:
+                    if speaking and self._inference_task is not None:
+                        # Speech resumed while Smart Turn inference was in-flight.
+                        self._cancel_inference()
+                        self._inference_generation += 1
+
                     accumulated_speech += window_duration
                     accumulated_silence = 0.0
                     if not speaking and (
@@ -189,12 +215,73 @@ class TenVADStream(vad.VADStream):
                                 speaking=True,
                             )
                         )
+
+                    if speaking:
+                        # Append to turn buffer during speech
+                        self._turn_audio_buffer = np.concatenate((self._turn_audio_buffer, chunk))
+                        if len(self._turn_audio_buffer) > max_buffer_samples:
+                            self._turn_audio_buffer = self._turn_audio_buffer[-max_buffer_samples:]
                 else:
                     accumulated_silence += window_duration
                     accumulated_speech = 0.0
+
+                    if speaking:
+                        # Continue appending to turn buffer during silence gaps within the turn
+                        self._turn_audio_buffer = np.concatenate((self._turn_audio_buffer, chunk))
+                        if len(self._turn_audio_buffer) > max_buffer_samples:
+                            self._turn_audio_buffer = self._turn_audio_buffer[-max_buffer_samples:]
+
                     if speaking and (
                         accumulated_silence >= self._opts.min_silence_duration
                     ):
+                        # Smart Turn Gating
+                        if self._opts.smart_turn.enabled:
+                            # Start inference if not already running.
+                            if self._inference_task is None:
+                                async def run_smart_turn():
+                                    try:
+                                        audio_to_analyze = self._turn_audio_buffer.copy()
+                                        return await self._smart_turn_analyzer.analyze_async(
+                                            audio_to_analyze
+                                        )
+                                    except Exception:
+                                        logger.exception("Error during Smart Turn analysis")
+                                        return 1.0  # Fallback to complete
+
+                                self._inference_generation += 1
+                                self._inference_task_generation = self._inference_generation
+                                self._inference_task = asyncio.create_task(run_smart_turn())
+
+                            is_complete = False
+                            # Check if current inference finished.
+                            if self._inference_task is not None and self._inference_task.done():
+                                if self._inference_task.cancelled():
+                                    self._inference_task = None
+                                else:
+                                    prob = self._inference_task.result()
+                                    self._inference_task = None
+                                    if self._inference_task_generation != self._inference_generation:
+                                        # Stale inference result; speech resumed since this task began.
+                                        is_complete = False
+                                    elif prob >= self._opts.smart_turn.prob_threshold:
+                                        logger.info("Smart Turn: complete (prob=%.3f)", prob)
+                                        is_complete = True
+                                    else:
+                                        logger.debug("Smart Turn: incomplete (prob=%.3f)", prob)
+                                        is_complete = False
+
+                            # Fallback timeout logic
+                            if accumulated_silence >= self._opts.smart_turn.stop_secs:
+                                logger.warning(
+                                    "Smart Turn fallback: forced complete after %.1fs",
+                                    accumulated_silence,
+                                )
+                                is_complete = True
+
+                            if not is_complete:
+                                continue  # Keep in speaking state, don't emit END_OF_SPEECH yet
+
+                        # If we get here, the turn is confirmed complete (or Smart Turn is disabled)
                         speaking = False
                         silence_duration = accumulated_silence
                         self._event_ch.send_nowait(
@@ -211,3 +298,8 @@ class TenVADStream(vad.VADStream):
                             )
                         )
                         speech_duration = 0.0
+                        accumulated_silence = 0.0
+                        self._turn_audio_buffer = np.empty(0, dtype=np.int16)
+                        self._cancel_inference()
+
+        self._cancel_inference()

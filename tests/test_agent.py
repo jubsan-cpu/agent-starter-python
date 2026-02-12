@@ -1,11 +1,19 @@
+import os
+
 import pytest
-from livekit.agents import AgentSession, inference, llm
+from dotenv import load_dotenv
+from livekit.agents import AgentSession, llm
+from livekit.plugins import openai
 
 from agent import Assistant
 
+load_dotenv(".env.local")
+
 
 def _llm() -> llm.LLM:
-    return inference.LLM(model="openai/gpt-4.1-mini")
+    if not os.getenv("OPENAI_API_KEY"):
+        pytest.skip("OPENAI_API_KEY is required to run LLM eval tests")
+    return openai.LLM(model="gpt-4.1-mini")
 
 
 @pytest.mark.asyncio

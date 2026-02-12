@@ -20,6 +20,7 @@ dependencies = [
     "deepfilternet",
     "torch>=2.0,<2.6",
     "torchaudio>=2.0,<2.6",
+    "pipecat-ai[local-smart-turn-v3]>=0.0.102,<0.1",
 ]
 
 [dependency-groups]
