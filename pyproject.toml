@@ -17,10 +17,10 @@ dependencies = [
     "ten-vad @ git+https://github.com/TEN-framework/ten-vad.git",
     "python-dotenv",
     "soxr",
-    "deepfilternet",
     "torch>=2.0,<2.6",
     "torchaudio>=2.0,<2.6",
     "pipecat-ai[local-smart-turn-v3]>=0.0.102,<0.1",
+    "einops",
 ]
 
 [dependency-groups]
@@ -43,6 +43,7 @@ asyncio_default_fixture_loop_scope = "function"
 [tool.ruff]
 line-length = 88
 target-version = "py39"
+extend-exclude = ["src/vendor"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "B", "A", "C4", "UP", "SIM", "RUF"]

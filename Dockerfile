@@ -72,8 +72,8 @@ USER appuser
 # dependencies at runtime, which improves startup time and reliability
 RUN uv run src/agent.py download-files
 
-# Pre-download DeepFilterNet3 model weights
-RUN uv run python -c "from df.enhance import get_model_basedir; get_model_basedir('DeepFilterNet2')"
+# Sanity-check GTCRN model loading (checkpoint + stream model conversion)
+RUN uv run python -c "from gtcrn_audio_pipeline import GTCRNModel; GTCRNModel()"
 
 # Run the application using UV
 # UV will activate the virtual environment and run the agent.

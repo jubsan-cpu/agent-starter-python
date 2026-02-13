@@ -22,20 +22,51 @@ class _FakeTenVad:
 
 
 class _FakeSmartTurnAnalyzer:
-    outcomes: ClassVar[list[float]] = [0.9]
+    outcomes: ClassVar[list[bool]] = [True]
     delay_s: ClassVar[float] = 0.0
     calls: ClassVar[int] = 0
+    append_calls: ClassVar[int] = 0
 
     def __init__(self, config: SmartTurnConfig, sample_rate: int = 16000) -> None:
         self._config = config
         self._sample_rate = sample_rate
 
-    async def analyze_async(self, audio: np.ndarray) -> float:
+    def append_audio(self, chunk: np.ndarray, is_speech: bool) -> bool:
+        type(self).append_calls += 1
+        _ = (chunk, is_speech)
+        return False
+
+    async def analyze_end_of_turn(self) -> bool:
         type(self).calls += 1
         await asyncio.sleep(type(self).delay_s)
         if type(self).outcomes:
             return type(self).outcomes.pop(0)
-        return 0.9
+        return True
+
+    def clear(self) -> None:
+        return
+
+    def update_vad_start_secs(self, vad_start_secs: float) -> None:
+        _ = vad_start_secs
+        return
+
+
+class _FakeSmartTurnAnalyzerTimeout(_FakeSmartTurnAnalyzer):
+    silence_hops_required: ClassVar[int] = 3
+    _silence_hops: int
+
+    def __init__(self, config: SmartTurnConfig, sample_rate: int = 16000) -> None:
+        super().__init__(config, sample_rate)
+        self._silence_hops = 0
+
+    def append_audio(self, chunk: np.ndarray, is_speech: bool) -> bool:
+        type(self).append_calls += 1
+        _ = chunk
+        if is_speech:
+            self._silence_hops = 0
+            return False
+        self._silence_hops += 1
+        return self._silence_hops >= type(self).silence_hops_required
 
 
 def _frame(samples: np.ndarray, sample_rate: int = 16000) -> rtc.AudioFrame:
@@ -67,17 +98,18 @@ async def _collect_events(
     return events
 
 
-def _reset_fake_smart_turn(*, outcomes: list[float], delay_s: float = 0.0) -> None:
+def _reset_fake_smart_turn(*, outcomes: list[bool], delay_s: float = 0.0) -> None:
     _FakeSmartTurnAnalyzer.outcomes = outcomes
     _FakeSmartTurnAnalyzer.delay_s = delay_s
     _FakeSmartTurnAnalyzer.calls = 0
+    _FakeSmartTurnAnalyzer.append_calls = 0
 
 
 @pytest.mark.asyncio
 async def test_smart_turn_complete_emits_end(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ten_vad_adapter, "TenVad", _FakeTenVad)
     monkeypatch.setattr(ten_vad_adapter, "SmartTurnAnalyzer", _FakeSmartTurnAnalyzer)
-    _reset_fake_smart_turn(outcomes=[0.9], delay_s=0.001)
+    _reset_fake_smart_turn(outcomes=[True], delay_s=0.001)
 
     model = ten_vad_adapter.TenLiveKitVAD(
         sample_rate=16000,
@@ -85,7 +117,7 @@ async def test_smart_turn_complete_emits_end(monkeypatch: pytest.MonkeyPatch) ->
         threshold=0.5,
         min_speech_duration=0.016,
         min_silence_duration=0.016,
-        smart_turn=SmartTurnConfig(enabled=True, prob_threshold=0.6, stop_secs=1.7),
+        smart_turn=SmartTurnConfig(enabled=True, stop_secs=0.8),
     )
     stream = model.stream()
 
@@ -122,23 +154,23 @@ async def test_smart_turn_complete_emits_end(monkeypatch: pytest.MonkeyPatch) ->
         f"events={[e.type.name for e in events]}"
     )
     assert _FakeSmartTurnAnalyzer.calls >= 1
-    assert _FakeSmartTurnAnalyzer.calls >= 1
+    assert _FakeSmartTurnAnalyzer.append_calls >= 1
 
 
 @pytest.mark.asyncio
-async def test_smart_turn_fallback_timeout_emits_end(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_smart_turn_base_timeout_emits_end(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ten_vad_adapter, "TenVad", _FakeTenVad)
-    monkeypatch.setattr(ten_vad_adapter, "SmartTurnAnalyzer", _FakeSmartTurnAnalyzer)
-    _reset_fake_smart_turn(outcomes=[0.1, 0.1, 0.1])
+    monkeypatch.setattr(
+        ten_vad_adapter, "SmartTurnAnalyzer", _FakeSmartTurnAnalyzerTimeout
+    )
 
-    stop_secs = 0.05
     model = ten_vad_adapter.TenLiveKitVAD(
         sample_rate=16000,
         hop_size=256,
         threshold=0.5,
         min_speech_duration=0.016,
         min_silence_duration=0.016,
-        smart_turn=SmartTurnConfig(enabled=True, prob_threshold=0.6, stop_secs=stop_secs),
+        smart_turn=SmartTurnConfig(enabled=True, stop_secs=0.8),
     )
     stream = model.stream()
 
@@ -153,14 +185,13 @@ async def test_smart_turn_fallback_timeout_emits_end(monkeypatch: pytest.MonkeyP
 
     end_event = next((e for e in events if e.type == vad.VADEventType.END_OF_SPEECH), None)
     assert end_event is not None
-    assert end_event.silence_duration >= stop_secs
 
 
 @pytest.mark.asyncio
 async def test_resumed_speech_cancels_stale_inference(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ten_vad_adapter, "TenVad", _FakeTenVad)
     monkeypatch.setattr(ten_vad_adapter, "SmartTurnAnalyzer", _FakeSmartTurnAnalyzer)
-    _reset_fake_smart_turn(outcomes=[0.95, 0.1], delay_s=0.08)
+    _reset_fake_smart_turn(outcomes=[True, False], delay_s=0.08)
 
     model = ten_vad_adapter.TenLiveKitVAD(
         sample_rate=16000,
@@ -168,7 +199,7 @@ async def test_resumed_speech_cancels_stale_inference(monkeypatch: pytest.Monkey
         threshold=0.5,
         min_speech_duration=0.016,
         min_silence_duration=0.016,
-        smart_turn=SmartTurnConfig(enabled=True, prob_threshold=0.6, stop_secs=1.0),
+        smart_turn=SmartTurnConfig(enabled=True, stop_secs=0.8),
     )
     stream = model.stream()
 
@@ -188,4 +219,3 @@ async def test_resumed_speech_cancels_stale_inference(monkeypatch: pytest.Monkey
     await stream.aclose()
 
     assert not any(e.type == vad.VADEventType.END_OF_SPEECH for e in events)
-    assert stream._inference_generation >= 2

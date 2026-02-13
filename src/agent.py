@@ -12,7 +12,7 @@ from livekit.agents import (
 )
 from livekit.plugins import cartesia, elevenlabs, openai
 
-from audio_pipeline import AudioPreprocessor, DFNAudioInput, DFNModel
+from gtcrn_audio_pipeline import AudioPreprocessor16k, GTCRNAudioInput, GTCRNModel
 from smart_turn_adapter import SmartTurnConfig
 from ten_vad_adapter import TenLiveKitVAD
 
@@ -35,24 +35,22 @@ server = AgentServer()
 
 
 def prewarm(proc: JobProcess):
-    """Prewarm TEN VAD and DFN model on process start."""
+    """Prewarm TEN VAD and GTCRN model on process start."""
     # Smart Turn Configuration from ENV
     smart_turn_enabled = os.getenv("SMART_TURN_ENABLED", "true").lower() == "true"
-    prob_threshold = float(os.getenv("SMART_TURN_PROB_THRESHOLD", "0.6"))
-    stop_secs = float(os.getenv("SMART_TURN_STOP_SECS", "1.7"))
+    stop_secs = float(os.getenv("SMART_TURN_STOP_SECS", "0.8"))
     max_duration_secs = float(os.getenv("SMART_TURN_MAX_DURATION_SECS", "8.0"))
     model_path = os.getenv("SMART_TURN_MODEL_PATH")
 
     st_config = SmartTurnConfig(
         enabled=smart_turn_enabled,
-        prob_threshold=prob_threshold,
         stop_secs=stop_secs,
         max_duration_secs=max_duration_secs,
         model_path=model_path,
     )
 
     proc.userdata["vad"] = TenLiveKitVAD(smart_turn=st_config)
-    proc.userdata["dfn_model"] = DFNModel(model_name="DeepFilterNet2", atten_lim_db=90)
+    proc.userdata["gtcrn_model"] = GTCRNModel()
 
 
 server.setup_fnc = prewarm
@@ -71,7 +69,7 @@ async def my_agent(ctx: JobContext):
         llm=openai.LLM(model="gpt-5-nano"),
         # TTS — Cartesia Sonic 3
         tts=cartesia.TTS(model="sonic-3"),
-        # TEN VAD — prewarmed, now receives denoised audio.
+        # TEN VAD — prewarmed, now receives enhanced audio (16k).
         # End-of-turn is gated by Smart Turn inside the adapter.
         vad=ctx.proc.userdata["vad"],
         # Allow LLM to generate while waiting for end of turn
@@ -84,18 +82,18 @@ async def my_agent(ctx: JobContext):
         room=ctx.room,
     )
 
-    # Wrap the RoomIO audio input with our DFN preprocessor.
-    # This inserts the soxr→DFN→soxr chain BEFORE the VAD/STT fork:
-    #   raw rtc (RoomIO) → DFNAudioInput (soxr→DFN→soxr) → VAD → STT
+    # Wrap the RoomIO audio input with our GTCRN preprocessor.
+    # This inserts the (soxr→)GTCRN chain BEFORE the VAD/STT fork:
+    #   raw rtc (RoomIO) → GTCRNAudioInput (soxr?→GTCRN_16k) → VAD → STT
     room_audio = session.input.audio
     if room_audio is not None:
-        # Per-session preprocessor (owns its own buffer, shares the DFN model)
-        preprocessor = AudioPreprocessor(ctx.proc.userdata["dfn_model"])
-        session.input.audio = DFNAudioInput(
+        # Per-session preprocessor (owns its own buffer, shares the GTCRN model)
+        preprocessor = AudioPreprocessor16k(ctx.proc.userdata["gtcrn_model"])
+        session.input.audio = GTCRNAudioInput(
             source=room_audio,
             preprocessor=preprocessor,
         )
-        logger.info("DFN audio preprocessing inserted into pipeline")
+        logger.info("GTCRN audio preprocessing inserted into pipeline")
 
     await ctx.connect()
 
