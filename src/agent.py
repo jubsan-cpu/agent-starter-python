@@ -68,7 +68,7 @@ async def my_agent(ctx: JobContext):
 
     session = AgentSession(
         # STT — ElevenLabs Scribe v2 realtime
-        stt=elevenlabs.STT(model_id="scribe_v2_realtime", language="en"),
+        stt=elevenlabs.STT(model_id="scribe_v2_realtime"),
         # LLM — OpenAI
         llm=openai.LLM(model="gpt-5-nano"),
         # TTS — Cartesia Sonic 3
