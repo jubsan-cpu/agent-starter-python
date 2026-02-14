@@ -39,6 +39,22 @@ def test_prewarm_default_smart_turn_stop_secs(monkeypatch: pytest.MonkeyPatch) -
     assert kwargs["smart_turn"].stop_secs == pytest.approx(0.8)
 
 
+def test_prewarm_default_vad_min_speech_secs(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent import prewarm
+
+    monkeypatch.delenv("VAD_MIN_SPEECH_SECS", raising=False)
+
+    proc = MagicMock(spec=JobProcess)
+    proc.userdata = {}
+
+    with patch("agent.TenLiveKitVAD") as mock_vad, patch("agent.GTCRNModel"):
+        prewarm(proc)
+
+    assert mock_vad.call_count == 1
+    kwargs = mock_vad.call_args.kwargs
+    assert kwargs["min_speech_duration"] == pytest.approx(0.18)
+
+
 def test_imports() -> None:
     from agent import AudioPreprocessor16k, GTCRNAudioInput
 

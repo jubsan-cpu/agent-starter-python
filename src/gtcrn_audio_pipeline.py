@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import math
 import os
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -32,6 +33,13 @@ HOP_LENGTH = 256
 WIN_LENGTH = 512
 _EPS = 1e-8
 _DEFAULT_SHA256 = "a630d992cf792daf4ce2bb5bcf9c4d389f740a8f09c6e0971184697fe6371b79"
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 @dataclass
@@ -164,13 +172,92 @@ class GTCRNModel:
         return out_hop.astype(np.float32, copy=False)
 
 
+class RMSNoiseGate:
+    """RMS gate that keeps timing stable by zeroing low-energy hops."""
+
+    def __init__(
+        self,
+        *,
+        enabled: bool,
+        sample_rate: int,
+        hop_length: int,
+        open_rms: float,
+        close_rms: float,
+        hangover_ms: float,
+    ) -> None:
+        if sample_rate <= 0:
+            raise ValueError("sample_rate must be > 0")
+        if hop_length <= 0:
+            raise ValueError("hop_length must be > 0")
+        if open_rms < 0.0 or close_rms < 0.0:
+            raise ValueError("RMS thresholds must be >= 0.0")
+        if close_rms > open_rms:
+            raise ValueError("close_rms must be <= open_rms")
+        if hangover_ms < 0.0:
+            raise ValueError("hangover_ms must be >= 0.0")
+
+        self._enabled = enabled
+        self._hop_length = hop_length
+        self._open_rms = open_rms
+        self._close_rms = close_rms
+        hop_ms = (1000.0 * hop_length) / sample_rate
+        self._hangover_hops = max(0, math.ceil(hangover_ms / hop_ms))
+        self._remaining_hops = 0
+        self._is_open = False
+
+    @classmethod
+    def from_env(cls, sample_rate: int, hop_length: int) -> RMSNoiseGate:
+        enabled = _env_bool("RMS_GATE_ENABLED", True)
+        open_rms = float(os.getenv("RMS_GATE_OPEN", "0.006"))
+        close_rms = float(os.getenv("RMS_GATE_CLOSE", "0.004"))
+        hangover_ms = float(os.getenv("RMS_GATE_HANGOVER_MS", "96"))
+        return cls(
+            enabled=enabled,
+            sample_rate=sample_rate,
+            hop_length=hop_length,
+            open_rms=open_rms,
+            close_rms=close_rms,
+            hangover_ms=hangover_ms,
+        )
+
+    def process_hop(self, hop_samples: np.ndarray) -> np.ndarray:
+        if hop_samples.shape[0] != self._hop_length:
+            raise ValueError(
+                f"Expected hop size {self._hop_length}, got {hop_samples.shape[0]}"
+            )
+        if not self._enabled:
+            return hop_samples
+
+        audio = hop_samples.astype(np.float32, copy=False)
+        rms = float(np.sqrt(np.mean(audio * audio)))
+
+        if self._is_open:
+            if rms >= self._close_rms:
+                self._remaining_hops = self._hangover_hops
+            elif self._remaining_hops > 0:
+                self._remaining_hops -= 1
+            else:
+                self._is_open = False
+        elif rms >= self._open_rms:
+            self._is_open = True
+            self._remaining_hops = self._hangover_hops
+
+        if self._is_open:
+            return hop_samples
+        return np.zeros_like(hop_samples)
+
+
 class AudioPreprocessor16k:
     """Per-session streaming preprocessor."""
 
-    def __init__(self, model: GTCRNModel) -> None:
+    def __init__(self, model: GTCRNModel, gate: RMSNoiseGate | None = None) -> None:
         self._model = model
         self._stream_state = model.create_stream_state()
         self._hop_buffer = np.empty(0, dtype=np.float32)
+        self._gate = gate or RMSNoiseGate.from_env(
+            sample_rate=GTCRN_SR,
+            hop_length=HOP_LENGTH,
+        )
 
     def process(
         self, pcm_data: bytes, sample_rate: int, num_channels: int
@@ -188,7 +275,8 @@ class AudioPreprocessor16k:
             hop = self._hop_buffer[:HOP_LENGTH]
             self._hop_buffer = self._hop_buffer[HOP_LENGTH:]
             enhanced = self._model.enhance_hop_16k(self._stream_state, hop)
-            pcm_int16 = (enhanced * 32768.0).clip(-32768, 32767).astype(np.int16)
+            gated = self._gate.process_hop(enhanced)
+            pcm_int16 = (gated * 32768.0).clip(-32768, 32767).astype(np.int16)
             results.append((pcm_int16, GTCRN_SR))
 
         return results

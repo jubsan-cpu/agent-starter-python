@@ -41,6 +41,7 @@ def prewarm(proc: JobProcess):
     stop_secs = float(os.getenv("SMART_TURN_STOP_SECS", "0.8"))
     max_duration_secs = float(os.getenv("SMART_TURN_MAX_DURATION_SECS", "8.0"))
     model_path = os.getenv("SMART_TURN_MODEL_PATH")
+    vad_min_speech_secs = float(os.getenv("VAD_MIN_SPEECH_SECS", "0.18"))
 
     st_config = SmartTurnConfig(
         enabled=smart_turn_enabled,
@@ -49,7 +50,10 @@ def prewarm(proc: JobProcess):
         model_path=model_path,
     )
 
-    proc.userdata["vad"] = TenLiveKitVAD(smart_turn=st_config)
+    proc.userdata["vad"] = TenLiveKitVAD(
+        smart_turn=st_config,
+        min_speech_duration=vad_min_speech_secs,
+    )
     proc.userdata["gtcrn_model"] = GTCRNModel()
 
 
@@ -64,7 +68,7 @@ async def my_agent(ctx: JobContext):
 
     session = AgentSession(
         # STT — ElevenLabs Scribe v2 realtime
-        stt=elevenlabs.STT(model_id="scribe_v2_realtime"),
+        stt=elevenlabs.STT(model_id="scribe_v2_realtime", language="en"),
         # LLM — OpenAI
         llm=openai.LLM(model="gpt-5-nano"),
         # TTS — Cartesia Sonic 3

@@ -13,6 +13,7 @@ from gtcrn_audio_pipeline import (
     HOP_LENGTH,
     AudioPreprocessor16k,
     GTCRNAudioInput,
+    RMSNoiseGate,
 )
 
 
@@ -71,6 +72,50 @@ def test_model_error_raises(preprocessor: AudioPreprocessor16k) -> None:
     preprocessor._model.enhance_hop_16k = _boom  # type: ignore[method-assign]
     with pytest.raises(RuntimeError, match="forced model failure"):
         preprocessor.process(np.zeros(HOP_LENGTH, dtype=np.int16).tobytes(), 16000, 1)
+
+
+def test_rms_gate_hangover_behavior() -> None:
+    gate = RMSNoiseGate(
+        enabled=True,
+        sample_rate=16000,
+        hop_length=HOP_LENGTH,
+        open_rms=0.1,
+        close_rms=0.05,
+        hangover_ms=32.0,
+    )
+    low = np.full(HOP_LENGTH, 0.01, dtype=np.float32)
+    high = np.full(HOP_LENGTH, 0.2, dtype=np.float32)
+
+    blocked_1 = gate.process_hop(low)
+    passed_high = gate.process_hop(high)
+    passed_hangover_1 = gate.process_hop(low)
+    passed_hangover_2 = gate.process_hop(low)
+    blocked_2 = gate.process_hop(low)
+
+    assert np.allclose(blocked_1, 0.0)
+    assert np.allclose(passed_high, high)
+    assert np.allclose(passed_hangover_1, low)
+    assert np.allclose(passed_hangover_2, low)
+    assert np.allclose(blocked_2, 0.0)
+
+
+def test_preprocessor_rms_gate_zeros_low_energy_hops() -> None:
+    gate = RMSNoiseGate(
+        enabled=True,
+        sample_rate=16000,
+        hop_length=HOP_LENGTH,
+        open_rms=0.04,
+        close_rms=0.03,
+        hangover_ms=0.0,
+    )
+    preprocessor = AudioPreprocessor16k(_FakeGTCRNModel(), gate=gate)
+
+    # Around RMS 0.015, below threshold -> zeroed by gate.
+    input_data = np.full(HOP_LENGTH, 500, dtype=np.int16).tobytes()
+    chunks = preprocessor.process(input_data, 16000, 1)
+    assert len(chunks) == 1
+    out = chunks[0][0]
+    assert np.all(out == 0)
 
 
 @pytest.mark.asyncio
