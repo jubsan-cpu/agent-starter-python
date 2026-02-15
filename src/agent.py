@@ -70,7 +70,7 @@ async def my_agent(ctx: JobContext):
         # STT — ElevenLabs Scribe v2 realtime
         stt=elevenlabs.STT(model_id="scribe_v2_realtime"),
         # LLM — OpenAI
-        llm=openai.LLM(model="gpt-5-nano"),
+        llm=openai.LLM(model="gpt-4o-mini"),
         # TTS — Cartesia Sonic 3
         tts=cartesia.TTS(model="sonic-3"),
         # TEN VAD — prewarmed, now receives enhanced audio (16k).
